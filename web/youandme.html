@@ -1410,6 +1410,7 @@ label,.label{color:#2b2e34!important;font-weight:800!important}
 <option value="disabled">معطل</option>
 <option value="paid">مدفوع</option>
 <option value="unpaid">غير مدفوع</option>
+<option value="archived">مؤرشف (محذوف)</option>
 </select>
 </div>
 </div>
@@ -1582,6 +1583,7 @@ label,.label{color:#2b2e34!important;font-weight:800!important}
 <button class="btn btn-ghost" id="paRecordPayment">تسجيل دفعة الآن</button>
 <button class="btn btn-ghost" id="paOpenOwnerAdmin">فتح لوحة المشروع</button>
 <button class="btn btn-danger" id="paToggleProjectEnabled">تعطيل المشروع</button>
+<button class="btn btn-danger" id="paArchiveProject">أرشفة المشروع (حذف)</button>
 </div>
 </div>
 </div>
@@ -2007,13 +2009,44 @@ function compressProductImage(file){
   });
 }
 
-let state=JSON.parse(localStorage.getItem(LS)||'null')||{projects:[]};
+// Section covers are large inline images (~170KB each). Storing a short reference
+// instead of a copy per project keeps localStorage well under its ~5MB quota.
+const SECTION_REF='ym-section:';
+function serializeState(s){
+  const byUrl=new Map(Object.entries(window.YM_SECTION_IMAGES).map(([k,v])=>[v,k]));
+  return JSON.stringify(s,(k,v)=>typeof v==='string'&&byUrl.has(v)?SECTION_REF+byUrl.get(v):v);
+}
+function parseState(raw){
+  if(!raw)return null;
+  return JSON.parse(raw,(k,v)=>typeof v==='string'&&v.startsWith(SECTION_REF)?(window.YM_SECTION_IMAGES[v.slice(SECTION_REF.length)]||''):v);
+}
+window.serializeState=serializeState;window.parseState=parseState;
+let state=parseState(localStorage.getItem(LS))||{projects:[]};
+state.archivedProjects ||= [];
+// `let` globals are not window properties; the hero, live dashboard and counters
+// read window.state, so without this they always saw nothing and showed 0.
+Object.defineProperty(window,'state',{get:()=>state,configurable:true});
 let currentProjectId=null, reportPeriod='month';
-function save(){localStorage.setItem(LS,JSON.stringify(state));renderDirectory()}
+let toastLockUntil=0;
+// Writes state to localStorage. Returns false (and tells the user) instead of
+// throwing, so a full quota can no longer silently drop changes mid-handler.
+function persistState(){
+  try{localStorage.setItem(LS,serializeState(state));return true}
+  catch(e){
+    console.error('[you&me] save failed',e);
+    const full=e&&(e.name==='QuotaExceededError'||e.code===22);
+    showToast(full?'لم يتم الحفظ: مساحة التخزين في المتصفح ممتلئة. احذف صورًا أو مشاريع مؤرشفة ثم حاول مجددًا.':'لم يتم الحفظ: تعذر الكتابة في تخزين المتصفح.',{force:true,ms:6000});
+    toastLockUntil=Date.now()+6000;
+    return false;
+  }
+}
+function save(){const ok=persistState();renderDirectory();return ok}
+function isPublicProject(p){return !!p&&!p.archived&&p.platformEnabled!==false}
+window.isPublicProject=isPublicProject;
 function uid(p='id'){return p+'_'+Date.now()+'_'+Math.random().toString(36).slice(2,8)}
 function money(n){return Number(n||0).toFixed(2)+' د.أ'}
 function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
-function showToast(t){const el=$('#toast');el.textContent=t;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),2200)}
+function showToast(t,opts){opts=opts||{};if(!opts.force&&Date.now()<toastLockUntil)return;const el=$('#toast');el.textContent=t;el.classList.add('show');clearTimeout(showToast._t);showToast._t=setTimeout(()=>el.classList.remove('show'),opts.ms||2200)}
 function openModal(id){$('#'+id).classList.add('open')} function closeModal(id){$('#'+id).classList.remove('open')}
 $$('[data-close]').forEach(b=>b.onclick=()=>closeModal(b.dataset.close));
 function switchView(id){$$('.view').forEach(v=>v.classList.remove('active'));$('#'+id).classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
@@ -2082,7 +2115,7 @@ function ensureProjectData(p){
 state.projects.forEach(ensureProjectData);
 let _coversMigrated=false;
 state.projects.forEach(p=>{const resolved=resolveProjectCover(p);if(isGenericProjectCover(p.cover)&&resolved&&p.cover!==resolved){p.cover=resolved;_coversMigrated=true;}});
-if(_coversMigrated){localStorage.setItem(LS,JSON.stringify(state));}
+try{const raw=localStorage.getItem(LS);if(raw||_coversMigrated){const compact=serializeState(state);if(compact!==raw)localStorage.setItem(LS,compact)}}catch(e){console.error('[you&me] compaction failed',e)}
 function bookingDateKey(dateStr){return dateStr}
 function minutesFromTime(t){const [h,m]=String(t||'00:00').split(':').map(Number);return h*60+m}
 function timeFromMinutes(n){return String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0')}
@@ -2151,10 +2184,11 @@ function slotsForDate(p,dateStr,serviceId){
 
 function periodStart(period){const d=new Date(); if(period==='day')d.setHours(0,0,0,0); if(period==='week'){const day=d.getDay();d.setDate(d.getDate()-day);d.setHours(0,0,0,0)} if(period==='month'){d.setDate(1);d.setHours(0,0,0,0)} if(period==='year'){d.setMonth(0,1);d.setHours(0,0,0,0)} return d.getTime()}
 function projectTotals(p){const sales=(p.sales||[]).reduce((a,s)=>a+s.total,0);const cost=(p.sales||[]).reduce((a,s)=>a+s.costTotal,0);const expenses=(p.expenses||[]).reduce((a,x)=>a+x.amount,0);const extraIncome=(p.incomes||[]).reduce((a,x)=>a+x.amount,0);return{sales,cost,expenses,extraIncome,profit:sales+extraIncome-cost-expenses}}
-function renderDirectory(){const grid=$('#projectsGrid');grid.innerHTML=''; if(!state.projects.length){grid.innerHTML='<div class="empty" style="grid-column:1/-1">لا يوجد مشاريع بعد. اضغط “إنشاء مشروع” وابدأ أول مشروع.</div>'}
- state.projects.forEach(p=>{const t=projectTotals(p);grid.insertAdjacentHTML('beforeend',`<article class="project-card"><div class="project-cover"><img src="${esc(resolveProjectCover(p))}" onerror="this.onerror=null;this.src=window.fallbackProductImage"><span class="project-type">${esc(p.type)}</span></div><div class="project-body"><h3>${esc(p.name)}</h3><p>${esc(p.desc||'مشروع جاهز لعرض خدماته ومنتجاته للناس.')}</p><div class="project-meta"><span>${esc(p.city||'بدون مدينة')}</span><span>مبيعات: ${money(t.sales)}</span></div><div class="project-actions"><button class="btn btn-ghost" onclick="openPublic('${p.id}')">عرض المشروع</button><button class="btn btn-primary" onclick="requestOwnerLogin('${p.id}')">لوحة المالك</button></div></div></article>`)});
- $('#kpiProjects').textContent=state.projects.length;$('#kpiSales').textContent=money(state.projects.reduce((a,p)=>a+projectTotals(p).sales,0))}
+function renderDirectory(){const grid=$('#projectsGrid');grid.innerHTML='';const visible=state.projects.filter(isPublicProject); if(!visible.length){grid.innerHTML='<div class="empty" style="grid-column:1/-1">لا يوجد مشاريع بعد. اضغط “إنشاء مشروع” وابدأ أول مشروع.</div>'}
+ visible.forEach(p=>{const t=projectTotals(p);grid.insertAdjacentHTML('beforeend',`<article class="project-card"><div class="project-cover"><img src="${esc(resolveProjectCover(p))}" onerror="this.onerror=null;this.src=window.fallbackProductImage"><span class="project-type">${esc(p.type)}</span></div><div class="project-body"><h3>${esc(p.name)}</h3><p>${esc(p.desc||'مشروع جاهز لعرض خدماته ومنتجاته للناس.')}</p><div class="project-meta"><span>${esc(p.city||'بدون مدينة')}</span><span>مبيعات: ${money(t.sales)}</span></div><div class="project-actions"><button class="btn btn-ghost" onclick="openPublic('${p.id}')">عرض المشروع</button><button class="btn btn-primary" onclick="requestOwnerLogin('${p.id}')">لوحة المالك</button></div></div></article>`)});
+ $('#kpiProjects').textContent=visible.length;$('#kpiSales').textContent=money(visible.reduce((a,p)=>a+projectTotals(p).sales,0))}
 function openPublic(id){
+if(!isPublicProject(state.projects.find(x=>x.id===id))){showToast('هذا المشروع غير متاح حاليًا');renderDirectory();return}
 currentProjectId=id;const p=ensureProjectData(getProject());
 $('#publicCover').onerror=()=>{$('#publicCover').onerror=null;$('#publicCover').src=fallbackProductImage};$('#publicCover').src=resolveProjectCover(p);
 $('#publicName').textContent=p.name;$('#publicType').textContent=p.type;$('#publicDesc').textContent=p.desc||'مرحبًا بكم في صفحتنا.';
@@ -2277,7 +2311,7 @@ if(!name)return showToast('اكتب اسم المشروع');
 if(!email||!email.includes('@'))return showToast('اكتب إيميل المالك');
 if(password.length<6)return showToast('كلمة السر يجب أن تكون 6 أحرف على الأقل');
 const p=ensureProjectData({id:uid('prj'),name,type:$('#cType').value,desc:$('#cDesc').value.trim(),phone:$('#cPhone').value.trim(),city:$('#cCity').value.trim(),cover:$('#cCover').value.trim()||resolveProjectCover({type:$('#cType').value,cover:''}),ownerEmail:email,ownerPassword:password,products:[],sales:[],invoices:[],incomes:[],expenses:[]});
-state.projects.push(p);save();closeModal('createModal');
+state.projects.push(p);if(!save()){state.projects.pop();renderDirectory();return}closeModal('createModal');
 ['cName','cDesc','cPhone','cCity','cCover','cOwnerEmail','cOwnerPassword'].forEach(id=>$('#'+id).value='');
 openAdmin(p.id);showToast('تم إنشاء المشروع ولوحة المالك')
 }
@@ -2541,6 +2575,18 @@ $('#confirmPublicBooking').onclick=()=>{
 
 $$('.report-tabs button').forEach(b=>b.onclick=()=>{$$('.report-tabs button').forEach(x=>x.classList.remove('active'));b.classList.add('active');reportPeriod=b.dataset.period;renderReports()});
 renderDirectory();
+// Keep every open tab on this device in step: when another tab saves, adopt its
+// data instead of overwriting it with a stale copy on the next save.
+window.addEventListener('storage',e=>{
+  if(e.key!==LS||!e.newValue)return;
+  try{
+    const next=parseState(e.newValue);if(!next||!Array.isArray(next.projects))return;
+    next.archivedProjects||=[];next.projects.forEach(ensureProjectData);
+    state=next;
+    if(currentProjectId&&!getProject())currentProjectId=null;
+    renderDirectory();
+  }catch(err){console.error('[you&me] sync failed',err)}
+});
 </script>
 <script id="bizora-global-motion-js">
 (function(){
@@ -3988,7 +4034,7 @@ button,.btn,.mini-btn,.fq-q,.time-slot{touch-action:manipulation}
     return s
   }
   state.projects.forEach(ensureSub);
-  try{localStorage.setItem(LS,JSON.stringify(state))}catch(e){}
+  try{localStorage.setItem(LS,serializeState(state))}catch(e){console.error('[you&me] save failed',e)}
 
   function allPayments(){
     const rows=[];
@@ -4147,6 +4193,7 @@ button,.btn,.mini-btn,.fq-q,.time-slot{touch-action:manipulation}
   }
   function renderProjects(){
     const tb=document.getElementById('paProjectsTable');if(!tb)return;
+    if((document.getElementById('paProjectStatusFilter')?.value||'all')==='archived')return renderArchivedProjects(tb);
     const rows=state.projects.filter(projectMatchesFilter);
     tb.innerHTML=rows.length?rows.map(p=>{
       const s=ensureSub(p);
@@ -4160,6 +4207,54 @@ button,.btn,.mini-btn,.fq-q,.time-slot{touch-action:manipulation}
       '</tr>'
     }).join(''):'<tr><td colspan="8">لا توجد نتائج.</td></tr>';
   }
+  function renderArchivedProjects(tb){
+    const q=(document.getElementById('paProjectSearch')?.value||'').trim().toLowerCase();
+    const rows=(state.archivedProjects||[]).filter(p=>!q||[p.name,p.ownerEmail,p.type,p.city].some(x=>String(x||'').toLowerCase().includes(q)));
+    tb.innerHTML=rows.length?rows.map(p=>'<tr>'+
+      '<td><div class="platform-project-cell"><strong>'+safe(p.name)+'</strong><small>'+safe(p.city||'بدون مدينة')+'</small></div></td>'+
+      '<td>'+safe(p.ownerEmail||'—')+'</td><td>'+safe(p.type||'—')+'</td>'+
+      '<td><span class="pa-state off">مؤرشف</span></td>'+
+      '<td colspan="3"><small class="muted">أُرشف في '+safe(String(p.archivedAt||'').slice(0,10)||'—')+'</small></td>'+
+      '<td><div class="platform-row-actions"><button class="mini-btn" onclick="paRestoreProject(\''+p.id+'\')">استرجاع</button><button class="mini-btn" onclick="paDeleteProjectForever(\''+p.id+'\')">حذف نهائي</button></div></td>'+
+      '</tr>').join(''):'<tr><td colspan="8">لا توجد مشاريع مؤرشفة.</td></tr>';
+  }
+  // Archiving is the delete action: the project leaves every public listing,
+  // search, owner login and counter, but its sales and invoices are kept so it
+  // can be restored. Permanent deletion is only offered for archived projects.
+  function archiveProject(id){
+    const i=state.projects.findIndex(p=>p.id===id);if(i<0)return;
+    const p=state.projects[i];
+    if(!confirm('أرشفة "'+p.name+'"؟\nسيختفي المشروع من الموقع ومن نتائج البحث ولوحة المالك. يمكنك استرجاعه لاحقًا من فلتر "مؤرشف".'))return;
+    state.projects.splice(i,1);
+    p.archived=true;p.archivedAt=new Date().toISOString();
+    state.archivedProjects.push(p);
+    if(!save()){state.archivedProjects.pop();delete p.archived;delete p.archivedAt;state.projects.splice(i,0,p);renderDirectory();return}
+    if(currentProjectId===id)currentProjectId=null;
+    closeModal('platformProjectModal');renderPlatform();showToast('تمت أرشفة المشروع وإخفاؤه من الموقع');
+  }
+  window.paRestoreProject=function(id){
+    const i=state.archivedProjects.findIndex(p=>p.id===id);if(i<0)return;
+    const p=state.archivedProjects[i];
+    state.archivedProjects.splice(i,1);delete p.archived;delete p.archivedAt;
+    state.projects.push(p);
+    if(!save()){state.projects.pop();p.archived=true;state.archivedProjects.splice(i,0,p);return}
+    renderPlatform();showToast('تم استرجاع المشروع');
+  };
+  window.paDeleteProjectForever=function(id){
+    const i=state.archivedProjects.findIndex(p=>p.id===id);if(i<0)return;
+    const p=state.archivedProjects[i];
+    const typed=prompt('حذف نهائي لا يمكن التراجع عنه، ويحذف مبيعات وفواتير المشروع.\nاكتب اسم المشروع للتأكيد:\n'+p.name);
+    if(typed===null)return;
+    if(typed.trim()!==String(p.name).trim())return showToast('الاسم غير مطابق، لم يتم الحذف');
+    state.archivedProjects.splice(i,1);
+    if(!save()){state.archivedProjects.splice(i,0,p);return}
+    renderPlatform();showToast('تم حذف المشروع نهائيًا');
+  };
+  document.getElementById('paArchiveProject').onclick=()=>archiveProject(document.getElementById('paEditProjectId').value);
+  // Another tab on this device changed the data: re-render the console from it.
+  window.addEventListener('storage',e=>{
+    if(e.key===LS&&document.getElementById('platformAdminView')?.classList.contains('active'))renderPlatform();
+  });
   document.getElementById('paProjectSearch').addEventListener('input',renderProjects);
   document.getElementById('paProjectStatusFilter').addEventListener('change',renderProjects);
 
@@ -4318,9 +4413,9 @@ button,.btn,.mini-btn,.fq-q,.time-slot{touch-action:manipulation}
     try{
       const j=JSON.parse(await f.text());
       if(!j.state||!Array.isArray(j.state.projects))throw new Error();
-      state=j.state;platform=j.platform?{...defaultPlatform,...j.platform}:platform;
+      state=j.state;state.archivedProjects||=[];platform=j.platform?{...defaultPlatform,...j.platform}:platform;
       state.projects.forEach(ensureSub);
-      localStorage.setItem(LS,JSON.stringify(state));localStorage.setItem(PKEY,JSON.stringify(platform));
+      localStorage.setItem(LS,serializeState(state));localStorage.setItem(PKEY,JSON.stringify(platform));
       renderDirectory();renderPlatform();showToast('تم استرجاع النسخة الاحتياطية')
     }catch(err){showToast('ملف النسخة غير صالح')}
     e.target.value=''
@@ -4892,7 +4987,7 @@ body.ym-site-reveal .hero-box{animation:ymSiteHero .9s cubic-bezier(.16,.84,.24,
   function renderHeroChart(forceIndex){
     const svg = document.getElementById('heroProjectChart');
     if(!svg || !window.state) return;
-    const projects = window.state.projects || [];
+    const projects = (window.state.projects || []).filter(window.isPublicProject);
     const series = buildSeries(projects);
     const w = 620, h = 220, padX = 16, top = 16, bottom = 36;
     const maxVal = Math.max(4, ...series);
@@ -4951,7 +5046,7 @@ body.ym-site-reveal .hero-box{animation:ymSiteHero .9s cubic-bezier(.16,.84,.24,
 
   function updateHeroAnalytics(selectedProjectIndex){
     if(!window.state) return;
-    const projects = window.state.projects || [];
+    const projects = (window.state.projects || []).filter(window.isPublicProject);
     const selectedIndex = Number.isInteger(selectedProjectIndex) ? selectedProjectIndex : heroActiveIndex;
     heroActiveIndex = Math.max(0, Math.min(Math.max(0, projects.length-1), selectedIndex || 0));
 
@@ -5472,7 +5567,7 @@ button.hero-metric{
   let phase = 0;
 
   function projectCount(){
-    try{return Math.max(0, Number(window.state?.projects?.length || 0))}catch(e){return 0}
+    try{return Math.max(0, (window.state?.projects || []).filter(window.isPublicProject).length)}catch(e){return 0}
   }
 
   function seed(){
@@ -5863,6 +5958,7 @@ button.hero-metric{
 
   function bindPhone(inputId,badgeId){
     const input=$id(inputId),badge=$id(badgeId);if(!input)return;
+    if(input._ymPaint){input._ymPaint();return}
     input.maxLength=10;input.inputMode='numeric';
     const paint=()=>{
       input.value=digits(input.value);
@@ -5874,6 +5970,7 @@ button.hero-metric{
         badge.classList.toggle('bad',has&&!ok);
       }
     };
+    input._ymPaint=paint;
     input.addEventListener('input',paint);
     input.addEventListener('blur',paint);
     paint();
@@ -6628,7 +6725,8 @@ button:active,.btn:active,.mini-btn:active{
 
   // Initial bind + rebind for dynamically generated sections/projects.
   bindCore();
-  const mo=new MutationObserver(()=>bindCore());
+  let bindQueued=false;
+  const mo=new MutationObserver(()=>{if(bindQueued)return;bindQueued=true;requestAnimationFrame(()=>{bindQueued=false;bindCore()})});
   mo.observe(document.body,{childList:true,subtree:true});
 
   // Defensive cleanup for old animation overlays.
