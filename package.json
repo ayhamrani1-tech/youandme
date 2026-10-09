@@ -1,0 +1,24 @@
+{
+  "name": "youandme",
+  "version": "1.0.0",
+  "private": true,
+  "description": "you&me — multi-section booking platform: sports fields, men's barber, women's salon, dental clinic, gyms",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "db:migrate": "npm run db:migrate -w @youandme/server",
+    "db:seed": "npm run db:seed -w @youandme/server",
+    "db:reset": "npm run db:reset -w @youandme/server",
+    "dev": "node scripts/dev.mjs",
+    "dev:api": "npm run dev -w @youandme/server",
+    "dev:web": "npm run dev -w @youandme/web",
+    "build": "npm run build -w @youandme/web",
+    "start": "npm run build -w @youandme/web && npm run start -w @youandme/server",
+    "test": "npm run test -w @youandme/server"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

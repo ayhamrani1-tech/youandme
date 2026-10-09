@@ -1,0 +1,10 @@
+node_modules/
+dist/
+server/data/
+server/.dev-secret
+.env
+.env.local
+*.log
+.DS_Store
+.vscode/
+.idea/

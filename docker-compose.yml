@@ -1,0 +1,25 @@
+# PostgreSQL for local development.
+#
+#   docker compose up -d db
+#   DB_DRIVER=postgres DATABASE_URL=postgres://youandme:youandme@localhost:5432/youandme npm run db:reset
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: youandme-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: youandme
+      POSTGRES_PASSWORD: youandme
+      POSTGRES_DB: youandme
+    ports:
+      - '5432:5432'
+    volumes:
+      - youandme-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U youandme -d youandme']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  youandme-pgdata:
